@@ -1,0 +1,6 @@
+{
+  "name": "AUTOSLASH DASHBOARD",
+  "description": "Multi-tenant control center for pilotage, monitoring, and management of distributed AI agent fleets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

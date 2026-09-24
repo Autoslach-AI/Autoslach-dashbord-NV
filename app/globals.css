@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-sans);
+  --font-display: var(--font-display);
+}
+
+@layer base {
+  :root {
+    --bg: #000000;
+    --fg: #ffffff;
+    --accent: #ffffff;
+    --muted: rgba(255, 255, 255, 0.4);
+    --border: rgba(255, 255, 255, 0.1);
+  }
+
+  html, body {
+    background-color: #0A0A0A;
+    @apply text-white antialiased selection:bg-white selection:text-black font-sans;
+    margin: 0;
+    padding: 0;
+    font-feature-settings: "ss01", "ss02", "cv01", "cv11";
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display;
+  }
+}
+
+@layer utilities {
+  .glass {
+    @apply bg-white/5 backdrop-blur-xl border border-white/10;
+  }
+  
+  .micro-label {
+    @apply text-[10px] font-black uppercase tracking-[0.5em] text-white/40 font-sans;
+  }
+
+  .premium-border {
+    @apply border-white/5;
+  }
+
+  .text-luxury {
+    @apply tracking-[-0.04em] leading-[0.9] font-light font-display;
+  }
+}
+
+/* Custom Scrollbar - Premium Dark */
+::-webkit-scrollbar {
+  width: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: #000;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #222;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #333;
+}
+
+.nav-shadow {
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+}
+
+.card-shadow {
+  @apply transition-all duration-500 hover:shadow-[0_0_50px_rgba(255,255,255,0.05)];
+}
