@@ -54,7 +54,7 @@ export function AdminSidebar({ email }: { email?: string }) {
           href="/admin/inventory" 
           icon={<Package />} 
           label="Inventory Management" 
-          active={pathname.startsWith('/admin/inventory')} 
+          active={pathname?.startsWith('/admin/inventory') ?? false} 
         />
         
         <NavItem 

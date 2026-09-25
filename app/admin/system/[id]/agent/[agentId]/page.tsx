@@ -89,7 +89,7 @@ export default function OracleConfigPage() {
   const [savingLog, setSavingLog]       = useState(false)
 
   useEffect(() => {
-    const tab = searchParams.get('tab');
+    const tab = searchParams?.get('tab');
     if (tab === 'KNOWLEDGE') {
       setActiveTab('KNOWLEDGE');
     } else if (tab === 'PERFORMANCE') {

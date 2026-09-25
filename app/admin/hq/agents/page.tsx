@@ -110,6 +110,17 @@ export default function HQAgentsPage() {
   // Confirmation de suppression (soft delete)
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<{ type: 'project' | 'conversation'; id: string; title: string } | null>(null);
 
+  // Modale Corbeille (Trash)
+  const [trashModalOpen, setTrashModalOpen] = useState(false);
+  const [trashActiveTab, setTrashActiveTab] = useState<'projects' | 'conversations'>('projects');
+  const [trashedProjects, setTrashedProjects] = useState<ProjectItem[]>([]);
+  const [trashedConversations, setTrashedConversations] = useState<ConversationItem[]>([]);
+  const [loadingTrash, setLoadingTrash] = useState(false);
+  const [selectedTrashIds, setSelectedTrashIds] = useState<string[]>([]);
+  const [trashActionLoading, setTrashActionLoading] = useState(false);
+  const [trashFeedback, setTrashFeedback] = useState<{ message: string; isError: boolean } | null>(null);
+  const [permanentDeleteConfirmOpen, setPermanentDeleteConfirmOpen] = useState(false);
+
   // Texte collé transformé automatiquement en pièce jointe (façon Claude.ai)
   const [pastedAttachments, setPastedAttachments] = useState<PastedAttachment[]>([]);
   const [previewingPaste, setPreviewingPaste] = useState<PastedAttachment | null>(null);
@@ -352,6 +363,183 @@ export default function HQAgentsPage() {
       console.error("Erreur suppression:", err);
     } finally {
       setDeleteConfirmTarget(null);
+    }
+  };
+
+  // ── Modale Corbeille (Trash) Handlers ───────────────────────────────────────
+  const openTrashModal = async () => {
+    setTrashModalOpen(true);
+    setTrashActiveTab('projects');
+    setSelectedTrashIds([]);
+    setTrashFeedback(null);
+    setPermanentDeleteConfirmOpen(false);
+    setLoadingTrash(true);
+
+    try {
+      const [projRes, convRes] = await Promise.all([
+        fetch('/api/admin/hq/agent-projects?agent_id=axon&status=trashed'),
+        fetch('/api/admin/hq/agent-conversations?agent_id=axon&status=trashed')
+      ]);
+
+      if (projRes.ok) {
+        const pData = await projRes.json();
+        setTrashedProjects(pData.data || []);
+      }
+      if (convRes.ok) {
+        const cData = await convRes.json();
+        setTrashedConversations(cData.data || []);
+      }
+    } catch (err) {
+      console.error("Erreur chargement corbeille:", err);
+      setTrashFeedback({ message: "Erreur lors du chargement de la corbeille", isError: true });
+    } finally {
+      setLoadingTrash(false);
+    }
+  };
+
+  const handleSwitchTrashTab = (tab: 'projects' | 'conversations') => {
+    setTrashActiveTab(tab);
+    setSelectedTrashIds([]);
+    setTrashFeedback(null);
+  };
+
+  const currentTrashList = trashActiveTab === 'projects' ? trashedProjects : trashedConversations;
+  const isAllTrashSelected = currentTrashList.length > 0 && currentTrashList.every(item => selectedTrashIds.includes(item.id));
+
+  const toggleSelectAllTrash = () => {
+    if (isAllTrashSelected) {
+      setSelectedTrashIds([]);
+    } else {
+      setSelectedTrashIds(currentTrashList.map(item => item.id));
+    }
+  };
+
+  const toggleSelectTrashItem = (id: string) => {
+    setSelectedTrashIds(prev =>
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleBulkRestore = async () => {
+    if (selectedTrashIds.length === 0 || trashActionLoading) return;
+    setTrashActionLoading(true);
+    setTrashFeedback(null);
+
+    let successCount = 0;
+    let failCount = 0;
+    const restoredProjects: ProjectItem[] = [];
+    const restoredConversations: ConversationItem[] = [];
+    const successfullyRestoredIds: string[] = [];
+
+    const endpoint = trashActiveTab === 'projects'
+      ? '/api/admin/hq/agent-projects'
+      : '/api/admin/hq/agent-conversations';
+
+    for (const id of selectedTrashIds) {
+      try {
+        const res = await fetch(endpoint, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, status: 'active' })
+        });
+        if (res.ok) {
+          const json = await res.json();
+          successCount++;
+          successfullyRestoredIds.push(id);
+          if (trashActiveTab === 'projects') {
+            const item = json.data || trashedProjects.find(p => p.id === id);
+            if (item) restoredProjects.push({ ...item, status: 'active' });
+          } else {
+            const item = json.data || trashedConversations.find(c => c.id === id);
+            if (item) restoredConversations.push({ ...item, status: 'active' });
+          }
+        } else {
+          failCount++;
+        }
+      } catch {
+        failCount++;
+      }
+    }
+
+    if (trashActiveTab === 'projects') {
+      setTrashedProjects(prev => prev.filter(p => !successfullyRestoredIds.includes(p.id)));
+      if (restoredProjects.length > 0) {
+        setProjects(prev => [...restoredProjects, ...prev.filter(p => !restoredProjects.some(r => r.id === p.id))]);
+      }
+    } else {
+      setTrashedConversations(prev => prev.filter(c => !successfullyRestoredIds.includes(c.id)));
+      if (restoredConversations.length > 0) {
+        setConversations(prev => [...restoredConversations, ...prev.filter(c => !restoredConversations.some(r => r.id === c.id))]);
+      }
+    }
+
+    setSelectedTrashIds(prev => prev.filter(id => !successfullyRestoredIds.includes(id)));
+    setTrashActionLoading(false);
+
+    if (failCount === 0) {
+      setTrashFeedback({
+        message: `${successCount} élément${successCount > 1 ? 's' : ''} restauré${successCount > 1 ? 's' : ''}`,
+        isError: false
+      });
+    } else {
+      setTrashFeedback({
+        message: `${successCount} restauré${successCount > 1 ? 's' : ''}, ${failCount} échec${failCount > 1 ? 's' : ''}`,
+        isError: true
+      });
+    }
+  };
+
+  const handleBulkPermanentDelete = async () => {
+    if (selectedTrashIds.length === 0 || trashActionLoading) return;
+    setTrashActionLoading(true);
+    setTrashFeedback(null);
+
+    let successCount = 0;
+    let failCount = 0;
+    const successfullyDeletedIds: string[] = [];
+
+    const endpoint = trashActiveTab === 'projects'
+      ? '/api/admin/hq/agent-projects'
+      : '/api/admin/hq/agent-conversations';
+
+    for (const id of selectedTrashIds) {
+      try {
+        const res = await fetch(endpoint, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id })
+        });
+        if (res.ok) {
+          successCount++;
+          successfullyDeletedIds.push(id);
+        } else {
+          failCount++;
+        }
+      } catch {
+        failCount++;
+      }
+    }
+
+    if (trashActiveTab === 'projects') {
+      setTrashedProjects(prev => prev.filter(p => !successfullyDeletedIds.includes(p.id)));
+    } else {
+      setTrashedConversations(prev => prev.filter(c => !successfullyDeletedIds.includes(c.id)));
+    }
+
+    setSelectedTrashIds(prev => prev.filter(id => !successfullyDeletedIds.includes(id)));
+    setTrashActionLoading(false);
+    setPermanentDeleteConfirmOpen(false);
+
+    if (failCount === 0) {
+      setTrashFeedback({
+        message: `${successCount} élément${successCount > 1 ? 's' : ''} supprimé${successCount > 1 ? 's' : ''} définitivement`,
+        isError: false
+      });
+    } else {
+      setTrashFeedback({
+        message: `${successCount} supprimé${successCount > 1 ? 's' : ''}, ${failCount} échec${failCount > 1 ? 's' : ''}`,
+        isError: true
+      });
     }
   };
 
@@ -773,20 +961,30 @@ export default function HQAgentsPage() {
           <aside className="w-72 border-r border-white/10 bg-[#0B0B0B] flex flex-col shrink-0 h-full overflow-hidden select-none">
             {/* Action Bar (Top of Sidebar) */}
             <div className="p-3 border-b border-white/5 space-y-2.5 shrink-0">
-              {/* 1. Bouton + Nouvelle conversation */}
-              <button
-                type="button"
-                onClick={() => handleCreateConversation()}
-                disabled={creatingConversation}
-                className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-[#39FF14]/30 text-white text-xs font-sans font-medium transition-all cursor-pointer active:scale-[0.99] disabled:opacity-50"
-              >
-                {creatingConversation ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[#39FF14]" />
-                ) : (
-                  <Plus className="w-3.5 h-3.5 text-[#39FF14]" />
-                )}
-                <span>Nouvelle conversation</span>
-              </button>
+              {/* 1. Bouton + Nouvelle conversation & Bouton Corbeille */}
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handleCreateConversation()}
+                  disabled={creatingConversation}
+                  className="flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-[#39FF14]/30 text-white text-xs font-sans font-medium transition-all cursor-pointer active:scale-[0.99] disabled:opacity-50"
+                >
+                  {creatingConversation ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-[#39FF14]" />
+                  ) : (
+                    <Plus className="w-3.5 h-3.5 text-[#39FF14]" />
+                  )}
+                  <span>Nouvelle conversation</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={openTrashModal}
+                  title="Ouvrir la corbeille"
+                  className="p-2.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-red-500/30 text-white/50 hover:text-red-400 transition-all cursor-pointer shrink-0"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
 
               {/* 2. Barre de recherche filtrant les discussions par titre */}
               <div className="relative">
@@ -1849,6 +2047,257 @@ export default function HQAgentsPage() {
                   Supprimer
                 </button>
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Modale Corbeille (Trash) */}
+      <AnimatePresence>
+        {trashModalOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setTrashModalOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 8 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-2xl bg-[#121212] border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden max-h-[85vh]"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
+                    <Trash2 className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-sans font-semibold text-white">Corbeille</h3>
+                    <p className="text-xs text-white/40 font-sans">Gérez les éléments supprimés (restauration ou suppression définitive)</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setTrashModalOpen(false)}
+                  className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Tabs */}
+              <div className="flex border-b border-white/10 px-6 bg-white/[0.01]">
+                <button
+                  type="button"
+                  onClick={() => handleSwitchTrashTab('projects')}
+                  className={`py-3 px-4 text-xs font-sans font-medium border-b-2 transition-all cursor-pointer flex items-center gap-2 ${
+                    trashActiveTab === 'projects'
+                      ? 'border-[#39FF14] text-white'
+                      : 'border-transparent text-white/40 hover:text-white/70'
+                  }`}
+                >
+                  <Folder className="w-3.5 h-3.5" />
+                  <span>Projets ({trashedProjects.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchTrashTab('conversations')}
+                  className={`py-3 px-4 text-xs font-sans font-medium border-b-2 transition-all cursor-pointer flex items-center gap-2 ${
+                    trashActiveTab === 'conversations'
+                      ? 'border-[#39FF14] text-white'
+                      : 'border-transparent text-white/40 hover:text-white/70'
+                  }`}
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>Discussions ({trashedConversations.length})</span>
+                </button>
+              </div>
+
+              {/* Toolbar : Sélection & Actions groupées */}
+              <div className="flex items-center justify-between px-6 py-3 border-b border-white/5 bg-white/[0.02]">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={toggleSelectAllTrash}
+                    disabled={currentTrashList.length === 0}
+                    className="text-xs font-sans text-white/60 hover:text-white transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    {isAllTrashSelected ? 'Tout désélectionner' : 'Tout sélectionner'}
+                  </button>
+                  {selectedTrashIds.length > 0 && (
+                    <span className="text-[11px] font-mono text-[#39FF14] bg-[#39FF14]/10 px-2 py-0.5 rounded-full">
+                      {selectedTrashIds.length} sélectionné{selectedTrashIds.length > 1 ? 's' : ''}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleBulkRestore}
+                    disabled={selectedTrashIds.length === 0 || trashActionLoading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-sans transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    {trashActionLoading ? (
+                      <Loader2 className="w-3 h-3 animate-spin text-[#39FF14]" />
+                    ) : (
+                      <RotateCw className="w-3 h-3 text-[#39FF14]" />
+                    )}
+                    <span>Restaurer</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPermanentDeleteConfirmOpen(true)}
+                    disabled={selectedTrashIds.length === 0 || trashActionLoading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-xs font-sans transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>Supprimer définitivement</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Feedback Alert Bar */}
+              {trashFeedback && (
+                <div
+                  className={`px-6 py-2.5 text-xs font-sans flex items-center justify-between border-b ${
+                    trashFeedback.isError
+                      ? 'bg-red-500/10 border-red-500/20 text-red-300'
+                      : 'bg-[#39FF14]/10 border-[#39FF14]/20 text-[#39FF14]'
+                  }`}
+                >
+                  <span>{trashFeedback.message}</span>
+                  <button
+                    type="button"
+                    onClick={() => setTrashFeedback(null)}
+                    className="p-1 hover:opacity-70 cursor-pointer"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
+
+              {/* Body: Item List */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-2">
+                {loadingTrash ? (
+                  <div className="py-12 flex flex-col items-center justify-center gap-3 text-white/40">
+                    <Loader2 className="w-6 h-6 animate-spin text-[#39FF14]" />
+                    <span className="text-xs font-sans">Chargement de la corbeille...</span>
+                  </div>
+                ) : currentTrashList.length === 0 ? (
+                  <div className="py-12 flex flex-col items-center justify-center gap-2 text-white/30">
+                    <Trash2 className="w-8 h-8 opacity-20" />
+                    <span className="text-xs font-sans italic">Corbeille vide</span>
+                  </div>
+                ) : (
+                  currentTrashList.map((item) => {
+                    const isChecked = selectedTrashIds.includes(item.id);
+                    const title = 'name' in item ? item.name : ((item as ConversationItem).title || 'Discussion sans titre');
+                    const dateStr = item.created_at
+                      ? new Date(item.created_at).toLocaleDateString('fr-FR', {
+                          day: '2-digit',
+                          month: 'short',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })
+                      : '';
+
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => toggleSelectTrashItem(item.id)}
+                        className={`flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer ${
+                          isChecked
+                            ? 'bg-[#39FF14]/5 border-[#39FF14]/30 text-white'
+                            : 'bg-white/[0.02] border-white/5 text-white/70 hover:bg-white/[0.04] hover:text-white'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => {}}
+                            className="w-4 h-4 rounded accent-[#39FF14] cursor-pointer"
+                          />
+                          <div className="flex items-center gap-2 min-w-0">
+                            {trashActiveTab === 'projects' ? (
+                              <Folder className="w-4 h-4 text-white/40 shrink-0" />
+                            ) : (
+                              <MessageSquare className="w-4 h-4 text-white/40 shrink-0" />
+                            )}
+                            <span className="text-xs font-sans truncate">{title}</span>
+                          </div>
+                        </div>
+                        {dateStr && (
+                          <span className="text-[11px] font-mono text-white/30 shrink-0 ml-4">
+                            {dateStr}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Sub-modal: Confirmation de suppression définitive */}
+              <AnimatePresence>
+                {permanentDeleteConfirmOpen && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="fixed inset-0 z-60 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 font-mono"
+                    onClick={() => setPermanentDeleteConfirmOpen(false)}
+                  >
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="w-full max-w-sm bg-[#141414] border border-white/10 rounded-2xl p-5 shadow-2xl flex flex-col gap-4 font-sans"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center shrink-0 text-red-400">
+                          <Trash2 className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-semibold text-white">
+                            Supprimer définitivement ?
+                          </h4>
+                          <p className="text-xs text-white/50 mt-1 leading-relaxed">
+                            {selectedTrashIds.length} élément{selectedTrashIds.length > 1 ? 's' : ''} {trashActiveTab === 'projects' ? 'projet(s)' : 'discussion(s)'} ser{selectedTrashIds.length > 1 ? 'ont' : 'a'} supprimé{selectedTrashIds.length > 1 ? 's' : ''} de manière irréversible de la base de données.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
+                        <button
+                          type="button"
+                          disabled={trashActionLoading}
+                          onClick={() => setPermanentDeleteConfirmOpen(false)}
+                          className="px-3 py-1.5 rounded-lg border border-white/10 text-white/60 hover:text-white hover:bg-white/5 text-xs transition-colors cursor-pointer disabled:opacity-50"
+                        >
+                          Annuler
+                        </button>
+                        <button
+                          type="button"
+                          disabled={trashActionLoading}
+                          onClick={handleBulkPermanentDelete}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
+                        >
+                          {trashActionLoading && <Loader2 className="w-3 h-3 animate-spin" />}
+                          <span>Confirmer la suppression</span>
+                        </button>
+                      </div>
+                    </motion.div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </motion.div>
           </motion.div>
         )}

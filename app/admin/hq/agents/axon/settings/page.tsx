@@ -140,7 +140,7 @@ function AgentSettingsPageContent() {
   const searchParams = useSearchParams();
   const { user, profile } = useUser();
 
-  const initialTab = (searchParams.get('tab') as AgentTabId) || 'axon';
+  const initialTab = (searchParams?.get('tab') as AgentTabId) || 'axon';
   const [activeAgentId, setActiveAgentId] = useState<AgentTabId>(
     ['axon', 'business', 'commercial'].includes(initialTab) ? initialTab : 'axon'
   );
