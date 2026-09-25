@@ -4,10 +4,12 @@ import { CanvasFactory } from 'pdf-parse/worker'
 import { PDFParse } from 'pdf-parse'
 import mammoth from 'mammoth'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+function getSupabase() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  )
+}
 
 const BUCKET = 'hq-knowledge-base'
 
@@ -40,6 +42,7 @@ async function extractText(file: File, buffer: Buffer): Promise<string> {
 
 async function withSignedUrl(row: any) {
   if (!row.storage_path) return { ...row, file_url: null }
+  const supabase = getSupabase()
   const { data } = await supabase.storage
     .from(BUCKET)
     .createSignedUrl(row.storage_path, 60 * 10) // 10 minutes
@@ -48,6 +51,7 @@ async function withSignedUrl(row: any) {
 
 export async function GET(req: Request) {
   try {
+    const supabase = getSupabase()
     const { searchParams } = new URL(req.url)
     const agent_id = searchParams.get('agent_id')
     const trash = searchParams.get('trash') === 'true'
@@ -82,6 +86,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const supabase = getSupabase()
     const formData = await req.formData()
     const source_agent = formData.get('source_agent') as string
     const visibility = (formData.get('visibility') as string) || 'shared'
@@ -151,6 +156,7 @@ export async function POST(req: Request) {
 
 export async function PATCH(req: Request) {
   try {
+    const supabase = getSupabase()
     const body = await req.json()
     const { id, restore, visibility, name, category, content } = body
 
@@ -196,6 +202,7 @@ export async function PATCH(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
+    const supabase = getSupabase()
     const body = await req.json()
     const { id, permanent } = body
 

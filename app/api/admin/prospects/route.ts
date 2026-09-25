@@ -1,13 +1,16 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+function getSupabase() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  )
+}
 
 export async function GET(req: Request) {
   try {
+    const supabase = getSupabase()
     const { searchParams } = new URL(req.url)
     const package_type    = searchParams.get('package_type')
     const prospect_status = searchParams.get('prospect_status')
@@ -83,6 +86,7 @@ export async function GET(req: Request) {
 
 export async function PATCH(req: Request) {
   try {
+    const supabase = getSupabase()
     const body = await req.json()
     const { enterprise_id, ...fields } = body
 

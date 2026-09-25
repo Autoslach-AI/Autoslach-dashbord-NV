@@ -1,13 +1,16 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+function getSupabase() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  )
+}
 
 export async function GET(req: Request) {
   try {
+    const supabase = getSupabase()
     const { searchParams } = new URL(req.url)
     const agent_id = searchParams.get('agent_id')
     const trash = searchParams.get('trash') === 'true'
@@ -57,6 +60,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    const supabase = getSupabase()
     const body = await req.json()
     const { agent_id, name, category, content } = body
 
@@ -103,6 +107,7 @@ export async function POST(req: Request) {
 
 export async function PATCH(req: Request) {
   try {
+    const supabase = getSupabase()
     const body = await req.json()
     const { id, is_active, skill_id, name, category, content, restore } = body
 
@@ -171,6 +176,7 @@ export async function PATCH(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
+    const supabase = getSupabase()
     const body = await req.json()
     const { id, permanent } = body
 

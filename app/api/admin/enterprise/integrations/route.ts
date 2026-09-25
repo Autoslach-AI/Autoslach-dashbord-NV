@@ -1,14 +1,17 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+function getSupabase() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  )
+}
 
 // GET — charger toutes les intégrations d'une enterprise
 export async function GET(req: Request) {
   try {
+    const supabase = getSupabase()
     const { searchParams } = new URL(req.url)
     const enterprise_id = searchParams.get('enterprise_id')
     if (!enterprise_id) return NextResponse.json({ error: 'enterprise_id requis' }, { status: 400 })
@@ -29,6 +32,7 @@ export async function GET(req: Request) {
 // POST — créer une intégration
 export async function POST(req: Request) {
   try {
+    const supabase = getSupabase()
     const body = await req.json()
     const { enterprise_id, service_name, integration_type, endpoint_url, secret_key, connected_agent_id, config } = body
     if (!enterprise_id || !service_name || !integration_type) {
@@ -51,6 +55,7 @@ export async function POST(req: Request) {
 // PATCH — activer/désactiver une intégration
 export async function PATCH(req: Request) {
   try {
+    const supabase = getSupabase()
     const body = await req.json()
     const { id, is_active } = body
     if (!id) return NextResponse.json({ error: 'id requis' }, { status: 400 })
