@@ -95,6 +95,10 @@ export default function HQAgentsPage() {
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const selectedConversationIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedConversationIdRef.current = selectedConversationId;
+  }, [selectedConversationId]);
   const [searchQuery, setSearchQuery] = useState('');
   const [creatingConversation, setCreatingConversation] = useState(false);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
@@ -201,6 +205,81 @@ export default function HQAgentsPage() {
     }
     fetchSidebarData();
   }, []);
+
+  // Chargement des messages au clic sur une discussion
+  useEffect(() => {
+    if (!selectedConversationId) {
+      setMessages([]);
+      return;
+    }
+
+    let isSubscribed = true;
+
+    async function fetchConversationMessages(convId: string) {
+      try {
+        const res = await fetch(`/api/admin/hq/agent-messages?conversation_id=${convId}`);
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!isSubscribed) return;
+
+        const rawList = json.data || [];
+        const loadedMessages: Message[] = rawList.map((m: any) => {
+          let atts: AttachedFileRef[] | undefined = undefined;
+          let pasted: PastedAttachment[] | undefined = undefined;
+
+          if (Array.isArray(m.attachments) && m.attachments.length > 0) {
+            const files: AttachedFileRef[] = [];
+            const pasteds: PastedAttachment[] = [];
+
+            for (const item of m.attachments) {
+              if (item?.kind === 'pasted') {
+                pasteds.push({
+                  id: item.id || crypto.randomUUID(),
+                  name: item.name || 'Texte collé.txt',
+                  content: item.content || ''
+                });
+              } else if (item?.kind === 'file') {
+                files.push({
+                  name: item.name,
+                  url: item.url,
+                  isImage: !!item.isImage
+                });
+              } else if (item?.url) {
+                // Rétrocompatibilité si d'anciens messages n'ont pas de champ "kind"
+                files.push({
+                  name: item.name || 'Fichier',
+                  url: item.url,
+                  isImage: !!item.isImage
+                });
+              }
+            }
+
+            if (files.length > 0) atts = files;
+            if (pasteds.length > 0) pasted = pasteds;
+          }
+
+          return {
+            id: m.id || crypto.randomUUID(),
+            role: m.sender === 'assistant' ? 'assistant' : 'user',
+            content: m.content || '',
+            timestamp: m.created_at ? new Date(m.created_at) : new Date(),
+            attachments: atts,
+            pastedTexts: pasted
+          };
+        });
+
+        setMessages(loadedMessages);
+      } catch (err) {
+        console.error("Erreur chargement messages de la conversation:", err);
+      }
+    }
+
+    fetchConversationMessages(selectedConversationId);
+
+    return () => {
+      isSubscribed = false;
+    };
+  }, [selectedConversationId]);
 
   // Créer une nouvelle conversation
   const handleCreateConversation = async (projectId?: string) => {
@@ -699,10 +778,14 @@ export default function HQAgentsPage() {
     content: string,
     historyBase: Message[],
     attachments: AttachedFileRef[],
-    pastedTexts: PastedAttachment[] = []
+    pastedTexts: PastedAttachment[] = [],
+    conversationIdOverride?: string
   ) => {
     const trimmed = content.trim();
     if (!trimmed || sending) return;
+
+    // AMÉLIORATION n°1 : capture du conversation_id actif au début de l'appel
+    const activeConvId = conversationIdOverride ?? selectedConversationIdRef.current;
 
     const userMsg: Message = {
       id: crypto.randomUUID(),
@@ -724,6 +807,35 @@ export default function HQAgentsPage() {
     setMessages([...historyBase, userMsg, loadingMsg]);
     setSending(true);
     setError(null);
+
+    // Sauvegarde en base du message utilisateur
+    if (activeConvId) {
+      const mergedAttachments = [
+        ...attachments.map(f => ({
+          kind: 'file' as const,
+          name: f.name,
+          url: f.url,
+          isImage: f.isImage
+        })),
+        ...pastedTexts.map(p => ({
+          kind: 'pasted' as const,
+          id: p.id,
+          name: p.name,
+          content: p.content
+        }))
+      ];
+
+      fetch('/api/admin/hq/agent-messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: activeConvId,
+          sender: 'user',
+          content: trimmed,
+          attachments: mergedAttachments
+        })
+      }).catch(err => console.error("Erreur sauvegarde message utilisateur:", err));
+    }
 
     try {
       const historyPayload = historyBase
@@ -759,9 +871,29 @@ export default function HQAgentsPage() {
       const json = await res.json();
       if (json.error) throw new Error(json.error);
 
-      setMessages(prev => prev.map(m =>
-        m.loading ? { ...m, content: json.reply, loading: false } : m
-      ));
+      // Sauvegarde en base de la réponse IA
+      if (activeConvId) {
+        fetch('/api/admin/hq/agent-messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversation_id: activeConvId,
+            sender: 'assistant',
+            content: json.reply,
+            attachments: []
+          })
+        }).catch(err => console.error("Erreur sauvegarde message assistant:", err));
+      }
+
+      // AMÉLIORATION n°1 : Vérifier si l'utilisateur est toujours sur la même conversation
+      if (selectedConversationIdRef.current === activeConvId) {
+        setMessages(prev => prev.map(m =>
+          m.loading ? { ...m, content: json.reply, loading: false } : m
+        ));
+      } else {
+        // L'utilisateur a changé de discussion : ne pas polluer l'écran visible
+        setMessages(prev => prev.filter(m => !m.loading));
+      }
     } catch (err: any) {
       setMessages(prev => prev.filter(m => !m.loading));
       setError(err.message || 'Une erreur est survenue lors de la communication.');
@@ -786,9 +918,54 @@ export default function HQAgentsPage() {
       textareaRef.current.style.height = 'auto';
     }
 
-    await dispatchMessage(trimmed, messages, currentAttachments, currentPastedTexts);
+    let targetConvId = selectedConversationId;
+
+    // 1. CRÉATION À LA VOLÉE si selectedConversationId est null
+    if (!targetConvId) {
+      const generatedTitle = trimmed.length > 30 ? trimmed.slice(0, 30) + '...' : trimmed;
+      try {
+        const res = await fetch('/api/admin/hq/agent-conversations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agent_id: 'axon',
+            title: generatedTitle,
+            project_id: null
+          })
+        });
+        const json = await res.json();
+        if (json.data) {
+          targetConvId = json.data.id;
+          selectedConversationIdRef.current = json.data.id;
+          setSelectedConversationId(json.data.id);
+          setConversations(prev => [json.data, ...prev]);
+        }
+      } catch (err) {
+        console.error("Erreur création à la volée de la conversation:", err);
+      }
+    } else {
+      // 4. TITRE PERSISTÉ EN BASE (AMÉLIORATION n°2)
+      // Si la conversation existante a encore un titre vide ou "Nouvelle discussion"
+      const currentConv = conversations.find(c => c.id === targetConvId);
+      if (currentConv && (!currentConv.title || currentConv.title.trim() === 'Nouvelle discussion' || currentConv.title.trim() === 'Nouvelle conversation')) {
+        const generatedTitle = trimmed.length > 30 ? trimmed.slice(0, 30) + '...' : trimmed;
+        // Mise à jour state local
+        setConversations(prev => prev.map(c => c.id === targetConvId ? { ...c, title: generatedTitle } : c));
+        // Mise à jour en base
+        fetch('/api/admin/hq/agent-conversations', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: targetConvId,
+            title: generatedTitle
+          })
+        }).catch(err => console.error("Erreur mise à jour titre conversation:", err));
+      }
+    }
+
+    await dispatchMessage(trimmed, messages, currentAttachments, currentPastedTexts, targetConvId || undefined);
     setTimeout(() => textareaRef.current?.focus(), 10);
-  }, [input, sending, messages, attachedFiles, pastedAttachments, dispatchMessage]);
+  }, [input, sending, messages, attachedFiles, pastedAttachments, dispatchMessage, selectedConversationId, conversations]);
 
   // Regenerate last response
   const regenerateResponse = useCallback(async () => {
