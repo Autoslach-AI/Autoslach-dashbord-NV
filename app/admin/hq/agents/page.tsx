@@ -111,6 +111,10 @@ export default function HQAgentsPage() {
   const [renamingTarget, setRenamingTarget] = useState<{ type: 'project' | 'conversation'; id: string } | null>(null);
   const [renamingValue, setRenamingValue] = useState('');
 
+  // Drag & Drop State
+  const [draggingConvId, setDraggingConvId] = useState<string | null>(null);
+  const [dragOverTarget, setDragOverTarget] = useState<string | null>(null); // 'root' | project_id | null
+
   // Confirmation de suppression (soft delete)
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<{ type: 'project' | 'conversation'; id: string; title: string } | null>(null);
 
@@ -385,6 +389,43 @@ export default function HQAgentsPage() {
     } finally {
       setRenamingTarget(null);
       setRenamingValue('');
+    }
+  };
+
+  // Déplacement d'une discussion par Drag & Drop (vers un projet ou vers la racine)
+  const handleMoveConversation = async (conversationId: string, targetProjectId: string | null) => {
+    const conv = conversations.find(c => c.id === conversationId);
+    if (!conv) return;
+
+    // Empêche de déposer une discussion sur le projet où elle se trouve déjà (no-op silencieux)
+    const currentProjectId = conv.project_id || null;
+    if (currentProjectId === targetProjectId) return;
+
+    try {
+      const res = await fetch('/api/admin/hq/agent-conversations', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: conversationId,
+          project_id: targetProjectId
+        })
+      });
+
+      if (res.ok) {
+        // Mise à jour immédiate du state local
+        setConversations(prev =>
+          prev.map(c => c.id === conversationId ? { ...c, project_id: targetProjectId } : c)
+        );
+        // Déplier automatiquement le projet cible pour afficher la discussion déplacée
+        if (targetProjectId) {
+          setExpandedProjects(prev => ({ ...prev, [targetProjectId]: true }));
+        }
+      }
+    } catch (err) {
+      console.error("Erreur déplacement conversation:", err);
+    } finally {
+      setDraggingConvId(null);
+      setDragOverTarget(null);
     }
   };
 
@@ -1188,10 +1229,47 @@ export default function HQAgentsPage() {
             {/* Sidebar Scrollable Body */}
             <div className="flex-1 overflow-y-auto p-2 space-y-4">
 
-              {/* 3. Section DISCUSSIONS sans projet (project_id null) */}
-              <div className="space-y-1">
+              {/* 3. Section DISCUSSIONS sans projet (project_id null) — Zone de dépôt racine */}
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  if (dragOverTarget !== 'root') setDragOverTarget('root');
+                }}
+                onDragEnter={(e) => {
+                  e.preventDefault();
+                  setDragOverTarget('root');
+                }}
+                onDragLeave={(e) => {
+                  // Évite de flicker si le curseur passe au-dessus d'un enfant
+                  if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                    setDragOverTarget(null);
+                  }
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const convId = e.dataTransfer.getData('text/conversation-id') || draggingConvId;
+                  if (convId) {
+                    handleMoveConversation(convId, null);
+                  }
+                  setDragOverTarget(null);
+                  setDraggingConvId(null);
+                }}
+                className={`space-y-1 rounded-xl p-1.5 -m-1.5 transition-all duration-150 ${
+                  dragOverTarget === 'root'
+                    ? 'bg-[#39FF14]/10 border border-[#39FF14]/40 ring-1 ring-[#39FF14]/20'
+                    : 'border border-transparent'
+                }`}
+              >
                 <div className="flex items-center justify-between px-2 py-1 text-[10px] font-sans font-semibold tracking-wider text-white/40 uppercase">
-                  <span>Discussions</span>
+                  <span className="flex items-center gap-1.5">
+                    <span>Discussions</span>
+                    {dragOverTarget === 'root' && (
+                      <span className="text-[9px] text-[#39FF14] font-normal normal-case animate-pulse">
+                        (Déposer à la racine)
+                      </span>
+                    )}
+                  </span>
                   <span className="text-[9px] font-mono text-white/20">
                     {conversations.filter(c => !c.project_id && (!searchQuery.trim() || c.title.toLowerCase().includes(searchQuery.toLowerCase().trim()))).length}
                   </span>
@@ -1203,6 +1281,7 @@ export default function HQAgentsPage() {
                     .map((conv) => {
                       const isSelected = selectedConversationId === conv.id;
                       const isRenaming = renamingTarget?.type === 'conversation' && renamingTarget?.id === conv.id;
+                      const isDragging = draggingConvId === conv.id;
 
                       if (isRenaming) {
                         return (
@@ -1239,8 +1318,20 @@ export default function HQAgentsPage() {
                       return (
                         <div
                           key={conv.id}
+                          draggable={!isRenaming}
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('text/conversation-id', conv.id);
+                            e.dataTransfer.effectAllowed = 'move';
+                            setDraggingConvId(conv.id);
+                          }}
+                          onDragEnd={() => {
+                            setDraggingConvId(null);
+                            setDragOverTarget(null);
+                          }}
                           onClick={() => setSelectedConversationId(conv.id)}
                           className={`group relative flex items-center justify-between px-2.5 py-2 rounded-lg cursor-pointer transition-all ${
+                            isDragging ? 'opacity-40 scale-[0.98]' : ''
+                          } ${
                             isSelected
                               ? 'bg-white/[0.08] text-white border-l-2 border-[#39FF14]'
                               : 'text-white/60 hover:text-white hover:bg-white/[0.04]'
@@ -1332,12 +1423,43 @@ export default function HQAgentsPage() {
                   {projects.map((project) => {
                     const isExpanded = !!expandedProjects[project.id];
                     const isRenaming = renamingTarget?.type === 'project' && renamingTarget?.id === project.id;
+                    const isDropTarget = dragOverTarget === project.id;
                     const projectConvs = conversations.filter(c =>
                       c.project_id === project.id && (!searchQuery.trim() || c.title.toLowerCase().includes(searchQuery.toLowerCase().trim()))
                     );
 
                     return (
-                      <div key={project.id} className="space-y-0.5">
+                      <div
+                        key={project.id}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = 'move';
+                          if (dragOverTarget !== project.id) setDragOverTarget(project.id);
+                        }}
+                        onDragEnter={(e) => {
+                          e.preventDefault();
+                          setDragOverTarget(project.id);
+                        }}
+                        onDragLeave={(e) => {
+                          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                            setDragOverTarget(null);
+                          }
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          const convId = e.dataTransfer.getData('text/conversation-id') || draggingConvId;
+                          if (convId) {
+                            handleMoveConversation(convId, project.id);
+                          }
+                          setDragOverTarget(null);
+                          setDraggingConvId(null);
+                        }}
+                        className={`space-y-0.5 rounded-xl transition-all duration-150 ${
+                          isDropTarget
+                            ? 'bg-[#39FF14]/10 border border-[#39FF14]/40 ring-1 ring-[#39FF14]/20'
+                            : 'border border-transparent'
+                        }`}
+                      >
                         {/* Ligne Projet */}
                         {isRenaming ? (
                           <div className="px-2 py-1 bg-[#141414] border border-[#39FF14]/40 rounded-lg flex items-center gap-1">
@@ -1370,7 +1492,11 @@ export default function HQAgentsPage() {
                         ) : (
                           <div
                             onClick={() => toggleProjectExpand(project.id)}
-                            className="group flex items-center justify-between px-2.5 py-1.5 rounded-lg cursor-pointer text-white/70 hover:text-white hover:bg-white/[0.04] transition-all"
+                            className={`group flex items-center justify-between px-2.5 py-1.5 rounded-lg cursor-pointer transition-all ${
+                              isDropTarget
+                                ? 'text-white'
+                                : 'text-white/70 hover:text-white hover:bg-white/[0.04]'
+                            }`}
                           >
                             <div className="flex items-center gap-2 min-w-0 flex-1">
                               {isExpanded ? (
@@ -1378,7 +1504,7 @@ export default function HQAgentsPage() {
                               ) : (
                                 <ChevronRight className="w-3.5 h-3.5 text-white/40 shrink-0" />
                               )}
-                              {isExpanded ? (
+                              {isExpanded || isDropTarget ? (
                                 <FolderOpen className="w-3.5 h-3.5 text-[#39FF14]/80 shrink-0" />
                               ) : (
                                 <Folder className="w-3.5 h-3.5 text-white/40 group-hover:text-white/60 shrink-0" />
@@ -1431,6 +1557,7 @@ export default function HQAgentsPage() {
                             {projectConvs.map((conv) => {
                               const isSelected = selectedConversationId === conv.id;
                               const isConvRenaming = renamingTarget?.type === 'conversation' && renamingTarget?.id === conv.id;
+                              const isDragging = draggingConvId === conv.id;
 
                               if (isConvRenaming) {
                                 return (
@@ -1467,8 +1594,20 @@ export default function HQAgentsPage() {
                               return (
                                 <div
                                   key={conv.id}
+                                  draggable={!isConvRenaming}
+                                  onDragStart={(e) => {
+                                    e.dataTransfer.setData('text/conversation-id', conv.id);
+                                    e.dataTransfer.effectAllowed = 'move';
+                                    setDraggingConvId(conv.id);
+                                  }}
+                                  onDragEnd={() => {
+                                    setDraggingConvId(null);
+                                    setDragOverTarget(null);
+                                  }}
                                   onClick={() => setSelectedConversationId(conv.id)}
                                   className={`group relative flex items-center justify-between px-2.5 py-1.5 rounded-lg cursor-pointer transition-all ${
+                                    isDragging ? 'opacity-40 scale-[0.98]' : ''
+                                  } ${
                                     isSelected
                                       ? 'bg-white/[0.08] text-white border-l-2 border-[#39FF14]'
                                       : 'text-white/50 hover:text-white hover:bg-white/[0.04]'
